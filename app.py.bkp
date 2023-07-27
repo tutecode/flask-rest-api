@@ -1,0 +1,212 @@
+import datetime
+import json
+from functools import wraps
+
+import jwt
+from flask import Flask, jsonify, request
+from werkzeug.security import check_password_hash, generate_password_hash
+
+from db import Session, engine
+from models import Usuario
+from sqlalchemy import text
+
+# Create an instance of the Flask class and assign it to the variable 'app'.
+app = Flask(__name__)
+app.config["SECRET_KEY"] = "Th1s1ss3cr3t"
+
+session = Session()
+
+
+# This is a route decorator that defines a route for the '/hola' URL path.
+# It specifies that the route will handle HTTP GET requests.
+@app.route("/hola", methods=["GET"])
+def hola():
+    # The function associated with this route, 'hola()', will be executed when the endpoint is accessed.
+    # It returns a JSON response containing a message.
+    return jsonify({"message": "Endpoint desde hola"})
+
+
+@app.route("/create_user", methods=["POST"])
+def create_user():
+    # This route handles a POST request to the "/create_user" endpoint.
+
+    # Load the JSON data from the request's body.
+    data = json.loads(request.data)
+
+    # Check if "username" and "password" keys are present in the JSON data.
+    if "username" not in data:
+        return jsonify({"respuesta": "No estas enviando el username!"})
+    if "password" not in data:
+        return jsonify({"respuesta": "No estas enviando el password!"})
+
+    # Check if the "username" and "password" values are not empty.
+    if len(data["username"]) == 0:
+        return jsonify({"respuesta": "Username no puede estar vacío."})
+    if len(data["password"]) == 0:
+        return jsonify({"respuesta": "Password no puede estar vacío."})
+
+    # print(data)
+    # print(type(data))
+
+    # Establish a connection to the database using the SQLAlchemy engine.
+    with engine.connect() as con:
+        # Convert password to sha256
+        hash_password = generate_password_hash(data["password"], method="sha256")
+        # Create a new instance of the Usuario model with the provided username and password.
+        nuevo_usuario = Usuario(username=data["username"], password=hash_password)
+
+        # Add the newly created user to the current session.
+        session.add(nuevo_usuario)
+
+        try:
+            # Commit the changes to the database.
+            session.commit()
+
+        # except:
+        #    # If the user with the same username already exists, handle the exception and return a JSON response.
+        #    return jsonify({"respuesta": "Usuario ya esta creado en la base de datos!"})
+        except Exception as e:
+            print("Error:", str(e))
+            return jsonify({"respuesta": "Usuario ya esta creado en la base de datos!"})
+
+    # If the user creation is successful, return a JSON response.
+    return jsonify({"respuesta": "Usuario creado correctamente!"})
+
+
+def token_required(f):
+    @wraps(f)
+    def decorator(*args, **kwargs):
+        token = None
+
+        if "x-access-tokens" in request.headers:
+            token = request.headers["x-access-tokens"]
+
+        if not token:
+            return jsonify({"message": "a valid token is missing"})
+
+        try:
+            data = jwt.decode(token, app.config["SECRET_KEY"])
+            # current_user = Users.query.filter_by(public_id=data['public_id']).first()
+        except:
+            return jsonify({"message": "token is invalid"})
+        return f(*args, **kwargs)
+
+    return decorator
+
+
+@app.route("/login", methods=["GET"])
+def login_user():
+    auth = request.authorization
+
+    if not auth or not auth.username or not auth.password:
+        # return make_response(
+        #    "could not verify",
+        #    401,
+        #    {"WWW.Authentication": 'Basic realm: "login required"'},
+        # )
+        return jsonify({"Response": "Could not verify"})
+
+    # user = Users.query.filter_by(name=auth.username).first()
+    with engine.connect() as con:
+        query = f"SELECT * FROM usuario WHERE username = '{auth.username}';"
+        #user = con.execute(
+        #    f"SELECT * FROM usurio WHERE username = '{auth.username}';"
+        #).one()
+        user = con.execute(text(query))
+        print(user)
+
+    if check_password_hash(user.password, auth.password):
+        token = jwt.encode(
+            {
+                "public_id": user.public_id,
+                "exp": datetime.datetime.utcnow() + datetime.timedelta(minutes=30),
+            },
+            app.config["SECRET_KEY"],
+        )
+        return jsonify({"token": token.decode("UTF-8")})
+
+    return jsonify({"Response": "Login requerido"})
+    # return make_response(
+    #    "could not verify", 401, {"WWW.Authentication": 'Basic realm: "login required"'}
+    # )
+
+
+@app.route("/obtener_venta", methods=["GET"])
+def obtener_venta():
+    # Load the JSON data from the request's body.
+    data = json.loads(request.data)
+    print(data)  # Debugging: Print the received data to the console.
+
+    # Check if 'username' key is present in the JSON data.
+    if "username" not in data:
+        return jsonify({"respuesta": "Username no enviado, validar datos!"})
+
+    # Establish a connection to the database using the SQLAlchemy engine.
+    with engine.connect() as con:
+        # Form a SQL query to retrieve the user's information based on the provided username.
+        obtener_usuario = (
+            f"SELECT * FROM usuario WHERE username = '{data['username']}';"
+        )
+        respuesta = con.execute(obtener_usuario).fetchone()
+        print(respuesta)
+        print(respuesta)
+
+        # Form a SQL query to retrieve sales data for the user.
+        obtener_venta = (
+            f"SELECT venta FROM ventas WHERE username_id = '{respuesta[0]}';"
+        )
+        respuesta_ventas = con.execute(obtener_venta)
+
+        # Extract the sales data from the query results.
+        # The result of con.execute(obtener_venta) is a list of tuples, and we extract the first element from each tuple to get the 'venta' value.
+        respuesta_ventas = [i[0] for i in respuesta_ventas]
+
+        # Return a JSON response containing the sales data for the user.
+        return jsonify(
+            {
+                "ventas_usuario": {
+                    "usuario": data["username"],
+                    "ventas": respuesta_ventas,
+                }
+            }
+        )
+
+
+# @app.route("/obtener_venta", methods=["GET"])
+# def obtener_venta():
+#    # Get the username from the query parameters.
+#    username = request.args.get('username')
+#
+#    # Check if the 'username' parameter is present in the request.
+#    if not username:
+#        return jsonify({'respuesta': 'Username no enviado, validar datos!'})
+#
+#    # Establish a connection to the database using the SQLAlchemy engine.
+#    with engine.connect() as con:
+#        # Form a SQL query to retrieve the user's information based on the provided username.
+#        obtener_usuario = "SELECT * FROM usuario WHERE username = :username"
+#        respuesta = con.execute(obtener_usuario, username=username).fetchone()
+#
+#        if not respuesta:
+#            # If the user with the given username is not found, return an appropriate response.
+#            return jsonify({'respuesta': 'Usuario no encontrado en la base de datos!'})
+#
+#        # Form a SQL query to retrieve sales data for the user.
+#        obtener_venta = "SELECT venta FROM ventas WHERE username_id = :user_id"
+#        respuesta_ventas = con.execute(obtener_venta, user_id=respuesta['id']).fetchall()
+#
+#        # Extract the sales data from the query results.
+#        # The result of con.execute(obtener_venta) is a list of tuples, and we extract the first element from each tuple to get the 'venta' value.
+#        respuesta_ventas = [i[0] for i in respuesta_ventas]
+#
+#        # Return a JSON response containing the sales data for the user.
+#        return jsonify({'ventas_usuario': {'usuario': username, 'ventas': respuesta_ventas}})
+
+
+# The following block is a conditional check. When the script is run directly (not imported as a module),
+# the '__name__' variable is set to '__main__'. This block ensures that the app only runs when executed as the main module.
+if __name__ == "__main__":
+    # Start the Flask development server.
+    # The 'debug=True' argument enables debug mode, which provides additional error information
+    # and auto-reloads the server whenever you make changes to the code, making development easier.
+    app.run(debug=True)
